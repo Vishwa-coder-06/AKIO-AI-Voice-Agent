@@ -1,0 +1,5 @@
+package com.akio.backend.controller;
+
+public class AkioController {
+
+}

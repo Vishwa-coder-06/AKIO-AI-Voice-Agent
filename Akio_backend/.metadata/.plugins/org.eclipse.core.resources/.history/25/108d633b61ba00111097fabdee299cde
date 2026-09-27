@@ -1,0 +1,71 @@
+package com.akio.backend.controller;
+
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import com.akio.backend.dto.ChatRequest;
+import com.akio.backend.dto.ChatResponse;
+import com.akio.backend.service.GeminiService;
+import com.akio.backend.service.PiperService;
+
+@RestController
+@RequestMapping("/api/akio")
+public class AkioController {
+
+    private final GeminiService geminiService;
+    private final PiperService piperService;
+
+    public AkioController(
+            GeminiService geminiService,
+            PiperService piperService) {
+
+        this.geminiService = geminiService;
+        this.piperService = piperService;
+    }
+
+    @PostMapping("/chat")
+    public ChatResponse chat(@RequestBody ChatRequest request) {
+
+        String response =
+                geminiService.generateResponse(request.getMessage());
+
+        return new ChatResponse(response);
+    }
+
+    @PostMapping(
+            value = "/speak",
+            produces = MediaType.APPLICATION_OCTET_STREAM_VALUE
+    )
+    public ResponseEntity<byte[]> speak(
+            @RequestBody ChatRequest request) {
+
+        String response =
+                geminiService.generateResponse(request.getMessage());
+
+        byte[] audio =
+                piperService.synthesize(response);
+
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType("audio/wav"))
+                .body(audio);
+    }
+    
+    @GetMapping(
+            value = "/speak",
+            produces = MediaType.APPLICATION_OCTET_STREAM_VALUE
+    )
+    public ResponseEntity<byte[]> speakGet(
+            @RequestParam String message) {
+
+        String response =
+                geminiService.generateResponse(message);
+
+        byte[] audio =
+                piperService.synthesize(response);
+
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType("audio/wav"))
+                .body(audio);
+    }
+}
