@@ -11,8 +11,8 @@ public class GeminiService {
 
     private final RestClient restClient;
 
-    private static final String MODEL = "gemini-3.8-flash";
-
+    private static final String MODEL = "gemini-3.5-flash-lite";
+    
     public GeminiService(RestClient.Builder builder) {
 
         String apiKey = System.getenv("GEMINI_API_KEY");
@@ -37,27 +37,12 @@ public class GeminiService {
         // AKIO voice assistant instructions
         // -----------------------------------------
 
-        String prompt = """
-                You are AKIO, a voice assistant.
+    	String prompt = """
+    		    You are AKIO, a friendly voice assistant.
+    		    Answer naturally and concisely for speech playback.
+    		    Use plain text only. No Markdown, lists, emojis or symbols.
 
-                The response will be converted directly into speech.
-
-                Follow these rules strictly:
-                - Respond using plain text only.
-                - Do not use Markdown.
-                - Do not use asterisks.
-                - Do not use hashtags.
-                - Do not use bullet points.
-                - Do not use numbered lists.
-                - Do not use code blocks.
-                - Do not use emojis.
-                - Do not use special formatting.
-                - Do not include unnecessary symbols.
-                - Keep the response natural and easy to speak aloud.
-                - Give a concise answer unless the user asks for details.
-
-                User request:
-                """ + message;
+    		    User: """ + message;
 
         Map<String, Object> requestBody = Map.of(
             "contents", new Object[] {
@@ -66,7 +51,10 @@ public class GeminiService {
                         Map.of("text", prompt)
                     }
                 )
-            }
+            },
+            "generationConfig",Map.of("temperature",0.4,
+            		"maxOutputTokens",120
+            	)
         );
 
         int maxRetries = 3;
@@ -74,6 +62,7 @@ public class GeminiService {
         for (int attempt = 1; attempt <= maxRetries; attempt++) {
 
             try {
+            	long startTime = System.currentTimeMillis();
 
                 Map<?, ?> response = restClient.post()
                         .uri("/models/" + MODEL + ":generateContent")
@@ -83,6 +72,11 @@ public class GeminiService {
                         .body(Map.class);
 
                 String responseText = extractText(response);
+                long elapsed = System.currentTimeMillis() - startTime;
+
+                System.out.println(
+                    "Gemini response time: " + elapsed + " ms"
+                );
 
                 // -----------------------------------------
                 // Final cleanup before sending to ESP32
@@ -127,6 +121,7 @@ public class GeminiService {
                 }
             }
         }
+        
 
         return "Unable to get a response from Gemini.";
     }

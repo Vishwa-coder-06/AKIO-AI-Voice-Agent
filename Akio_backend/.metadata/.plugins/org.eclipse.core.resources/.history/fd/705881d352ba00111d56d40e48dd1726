@@ -1,5 +1,0 @@
-package com.akio.backend.config;
-
-public class RestClientConfig {
-
-}

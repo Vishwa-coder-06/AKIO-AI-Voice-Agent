@@ -19,7 +19,7 @@ def generate_mp3(text):
 
     # -----------------------------
     # Ask Piper
-    # -----------------------------
+    # --------------------
 
     data = json.dumps({
         "text": text
@@ -88,6 +88,7 @@ def generate_mp3(text):
     return bytes(mp3_data)
 
 
+
 class AKIOHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
@@ -95,25 +96,15 @@ class AKIOHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
 
         if parsed.path != "/stream":
-
             self.send_error(404)
             return
 
-        # -----------------------------
         # Get text from URL
-        # -----------------------------
-
         params = parse_qs(parsed.query)
-
         text_list = params.get("text")
 
         if not text_list:
-
-            self.send_error(
-                400,
-                "Missing text parameter"
-            )
-
+            self.send_error(400, "Missing text parameter")
             return
 
         text = text_list[0]
@@ -122,10 +113,7 @@ class AKIOHandler(BaseHTTPRequestHandler):
 
             mp3_data = generate_mp3(text)
 
-            # -----------------------------
-            # Send MP3
-            # -----------------------------
-
+            # Send MP3 headers
             self.send_response(200)
 
             self.send_header(
@@ -145,32 +133,26 @@ class AKIOHandler(BaseHTTPRequestHandler):
 
             self.end_headers()
 
-            # Send in chunks
-            chunk_size = 4096
+            # Send complete MP3 payload
+            self.wfile.write(mp3_data)
+            self.wfile.flush()
 
-            for i in range(
-                0,
+            print(
+                "MP3 sent successfully:",
                 len(mp3_data),
-                chunk_size
-            ):
-
-                chunk = mp3_data[
-                    i:i + chunk_size
-                ]
-
-                self.wfile.write(chunk)
-                self.wfile.flush()
-
-            print("MP3 sent to ESP32")
+                "bytes"
+            )
 
         except Exception as e:
 
-            print("ERROR:", e)
+            print("ERROR:", repr(e))
 
-            self.send_error(
-                500,
-                str(e)
-            )
+            # Only send an HTTP error if headers haven't been sent
+            if not self.wfile.closed:
+                try:
+                    self.send_error(500, str(e))
+                except Exception:
+                    pass
 
     def log_message(self, format, *args):
         return
