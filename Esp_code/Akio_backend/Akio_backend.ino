@@ -59,8 +59,8 @@ Adafruit_SSD1306 display(
 // WIFI
 // ==================================================
 
-const char* WIFI_SSID = "Vishwa's victus";
-const char* WIFI_PASSWORD = "vishwa93450";
+const char* WIFI_SSID = "WIFI SSID NAME";
+const char* WIFI_PASSWORD = "WIFI PASSWORD";
 
 
 // ==================================================
