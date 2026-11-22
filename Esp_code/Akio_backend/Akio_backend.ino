@@ -15,6 +15,10 @@
 #include "driver/i2s_std.h"
 #include "esp_system.h"
 
+#include <WebServer.h>
+#include <time.h>
+#include <sys/time.h>
+
 
 
 
@@ -27,6 +31,15 @@ AudioFileSourceBuffer *buff = nullptr;
 AudioGeneratorMP3 *mp3 = nullptr;
 AudioOutputInternalDAC *out = nullptr;
 
+// ==================================================
+// REMINDER SYSTEM
+// ==================================================
+
+WebServer reminderServer(80);
+
+#define REMINDER_FILE "/reminders.json"
+
+bool reminderClockReady = false;
 
 // ==================================================
 // OLED
@@ -60,8 +73,8 @@ Adafruit_SSD1306 display(
 // WIFI
 // ==================================================
 
-const char* WIFI_SSID = "WIFI SSID NAME";
-const char* WIFI_PASSWORD = "WIFI PASSWORD";
+const char* WIFI_SSID = "Vishwa's victus";
+const char* WIFI_PASSWORD = "vishwa93450";
 
 
 // ==================================================
@@ -1489,6 +1502,551 @@ bool recorded = recordAudio();
     Serial.println("========== REQUEST PROCESSED ==========");
 }
 
+
+// ==================================================
+// REMINDER STORAGE
+// ==================================================
+
+bool saveReminderDocument(JsonDocument &doc) {
+
+    File f = LittleFS.open(REMINDER_FILE, "w");
+
+    if (!f) {
+        Serial.println("[ REMINDER ] Storage open failed!");
+        return false;
+    }
+
+    size_t written = serializeJson(doc, f);
+    f.close();
+
+    return written > 0;
+}
+
+
+// ==================================================
+// REMINDER WEBSITE
+// ==================================================
+
+const char REMINDER_HTML[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AKIO Reminder Manager</title>
+
+<style>
+* { box-sizing:border-box; }
+
+body {
+    margin:0;
+    padding:20px;
+    background:#0b1020;
+    color:#e8edff;
+    font-family:Arial,sans-serif;
+}
+
+.container {
+    max-width:520px;
+    margin:auto;
+}
+
+h1 { color:#61d5ff; margin-bottom:4px; }
+
+.sub { color:#8995b5; font-size:13px; }
+
+.card {
+    background:#151e35;
+    padding:18px;
+    margin-top:18px;
+    border-radius:14px;
+    border:1px solid #263452;
+}
+
+input {
+    width:100%;
+    padding:13px;
+    margin:9px 0 15px;
+    background:#0b1429;
+    border:1px solid #344363;
+    color:white;
+    border-radius:8px;
+    font-size:15px;
+}
+
+button {
+    width:100%;
+    padding:13px;
+    border:0;
+    border-radius:8px;
+    background:#19a9d6;
+    color:#00121d;
+    font-weight:bold;
+    font-size:15px;
+    cursor:pointer;
+}
+
+.event {
+    padding:13px;
+    background:#0b1429;
+    border-radius:9px;
+    margin-top:10px;
+    overflow-wrap:anywhere;
+}
+
+.event small { color:#9aa9c9; }
+
+.delete {
+    margin-top:9px;
+    padding:8px;
+    background:#8c3045;
+    color:white;
+}
+
+.status {
+    margin-top:12px;
+    color:#75d9a3;
+    font-size:13px;
+}
+</style>
+</head>
+
+<body>
+<div class="container">
+
+<h1>AKIO</h1>
+<div class="sub">PERSONAL REMINDER MANAGER</div>
+
+<div class="card">
+    <h2>Create Reminder</h2>
+
+    <label>Event name</label>
+    <input id="title" maxlength="100"
+           placeholder="Complete project documentation">
+
+    <label>Date and time</label>
+    <input id="eventTime" type="datetime-local">
+
+    <button onclick="addReminder()">SAVE REMINDER</button>
+
+    <div class="status" id="status">Connecting to AKIO...</div>
+</div>
+
+<div class="card">
+    <h2>Upcoming Reminders</h2>
+    <div id="events">Loading...</div>
+</div>
+
+</div>
+
+<script>
+
+async function syncClock() {
+    try {
+        const epoch = Math.floor(Date.now() / 1000);
+
+        const response = await fetch('/api/time', {
+            method:'POST',
+            headers:{'Content-Type':'text/plain'},
+            body:String(epoch)
+        });
+
+        if (!response.ok) throw new Error('Clock sync failed');
+
+        document.getElementById('status').innerText =
+            'AKIO connected | Clock synchronized';
+
+    } catch(e) {
+        document.getElementById('status').innerText =
+            'Cannot connect to AKIO';
+    }
+}
+
+async function loadReminders() {
+
+    try {
+        const response = await fetch('/api/reminders');
+
+        if (!response.ok) throw new Error('Load failed');
+
+        const events = await response.json();
+
+        const container = document.getElementById('events');
+
+        container.innerHTML = '';
+
+        if (events.length === 0) {
+            container.innerHTML = '<p>No reminders yet.</p>';
+            return;
+        }
+
+        events.sort((a,b) => a.epoch - b.epoch);
+
+        events.forEach(event => {
+
+            const item = document.createElement('div');
+            item.className = 'event';
+
+            const date = new Date(event.epoch * 1000);
+
+            const title = document.createElement('b');
+            title.textContent = event.title;
+
+            const details = document.createElement('small');
+            details.style.display = 'block';
+            details.textContent =
+                date.toLocaleString() +
+                (event.done ? ' | Triggered' : ' | Upcoming');
+
+            item.appendChild(title);
+            item.appendChild(details);
+
+            if (!event.done) {
+                const btn = document.createElement('button');
+                btn.className = 'delete';
+                btn.textContent = 'Delete';
+
+                btn.onclick = () => deleteReminder(event.id);
+
+                item.appendChild(btn);
+            }
+
+            container.appendChild(item);
+        });
+
+    } catch(e) {
+        document.getElementById('events').innerText =
+            'Unable to load reminders.';
+    }
+}
+
+async function addReminder() {
+
+    const title = document.getElementById('title').value.trim();
+    const dateValue = document.getElementById('eventTime').value;
+
+    if (!title || !dateValue) {
+        alert('Enter event name and date/time.');
+        return;
+    }
+
+    // Browser local time is converted into Unix epoch.
+    const epoch = Math.floor(new Date(dateValue).getTime() / 1000);
+
+    if (!Number.isFinite(epoch) || epoch <= Date.now()/1000) {
+        alert('Choose a future date and time.');
+        return;
+    }
+
+    await syncClock();
+
+    const response = await fetch('/api/reminders', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({title:title, epoch:epoch})
+    });
+
+    const result = await response.json();
+
+    if (!response.ok) {
+        alert(result.error || 'Could not save reminder.');
+        return;
+    }
+
+    document.getElementById('title').value = '';
+    document.getElementById('status').innerText =
+        'Reminder saved successfully!';
+
+    loadReminders();
+}
+
+async function deleteReminder(id) {
+
+    if (!confirm('Delete this reminder?')) return;
+
+    await fetch('/api/reminders?id=' + encodeURIComponent(id), {
+        method:'DELETE'
+    });
+
+    loadReminders();
+}
+
+syncClock();
+loadReminders();
+
+// Refresh clock and dashboard periodically.
+setInterval(syncClock, 30000);
+setInterval(loadReminders, 10000);
+
+</script>
+</body>
+</html>
+)rawliteral";
+
+
+// ==================================================
+// REMINDER SERVER ROUTES
+// ==================================================
+
+void startReminderServer() {
+
+    // Dashboard
+    reminderServer.on("/", HTTP_GET, []() {
+
+        reminderServer.send_P(
+            200,
+            "text/html",
+            REMINDER_HTML
+        );
+    });
+
+
+    // Browser clock synchronization
+    reminderServer.on("/api/time", HTTP_POST, []() {
+
+        String value = reminderServer.arg("plain");
+
+        uint64_t epoch = strtoull(value.c_str(), nullptr, 10);
+
+        if (epoch < 1700000000ULL) {
+            reminderServer.send(400, "text/plain", "Invalid time");
+            return;
+        }
+
+        struct timeval tv;
+        tv.tv_sec = (time_t)epoch;
+        tv.tv_usec = 0;
+
+        settimeofday(&tv, nullptr);
+
+        // India Standard Time (UTC +5:30)
+        setenv("TZ", "IST-5:30", 1);
+        tzset();
+
+        reminderClockReady = true;
+
+        Serial.println("[ REMINDER ] Clock synchronized!");
+
+        reminderServer.send(200, "text/plain", "Clock synchronized");
+    });
+
+
+    // Get all reminders
+    reminderServer.on("/api/reminders", HTTP_GET, []() {
+
+        if (!LittleFS.exists(REMINDER_FILE)) {
+            reminderServer.send(200, "application/json", "[]");
+            return;
+        }
+
+        File f = LittleFS.open(REMINDER_FILE, "r");
+
+        if (!f) {
+            reminderServer.send(500, "application/json", "[]");
+            return;
+        }
+
+        reminderServer.streamFile(f, "application/json");
+        f.close();
+    });
+
+
+    // Create reminder
+    reminderServer.on("/api/reminders", HTTP_POST, []() {
+
+        JsonDocument incoming;
+
+        DeserializationError error =
+            deserializeJson(incoming, reminderServer.arg("plain"));
+
+        if (error) {
+            reminderServer.send(400, "application/json",
+                                "{\"error\":\"Invalid JSON\"}");
+            return;
+        }
+
+        String title = incoming["title"] | "";
+        uint64_t epoch = incoming["epoch"] | (uint64_t)0;
+
+        if (title.length() == 0 || title.length() > 100) {
+            reminderServer.send(400, "application/json",
+                                "{\"error\":\"Invalid event name\"}");
+            return;
+        }
+
+        if (!reminderClockReady || epoch <= (uint64_t)time(nullptr)) {
+            reminderServer.send(400, "application/json",
+                                "{\"error\":\"Synchronize clock or choose a future time\"}");
+            return;
+        }
+
+        JsonDocument reminders;
+
+        if (LittleFS.exists(REMINDER_FILE)) {
+
+            File f = LittleFS.open(REMINDER_FILE, "r");
+
+            if (f) {
+                deserializeJson(reminders, f);
+                f.close();
+            }
+        }
+
+        if (reminders.isNull()) {
+            reminders.to<JsonArray>();
+        }
+
+        JsonArray arr = reminders.as<JsonArray>();
+
+        if (arr.isNull()) {
+            reminderServer.send(500, "application/json",
+                                "{\"error\":\"Reminder storage is invalid\"}");
+            return;
+        }
+
+        if (arr.size() >= 30) {
+            reminderServer.send(400, "application/json",
+                                "{\"error\":\"Maximum 30 reminders\"}");
+            return;
+        }
+
+        uint32_t id = (uint32_t)millis() ^ (uint32_t)random(1, 2147483647);
+
+        JsonObject item = arr.add<JsonObject>();
+
+        item["id"] = id;
+        item["title"] = title;
+        item["epoch"] = epoch;
+        item["done"] = false;
+
+        if (!saveReminderDocument(reminders)) {
+            reminderServer.send(500, "application/json",
+                                "{\"error\":\"Could not save reminder\"}");
+            return;
+        }
+
+        Serial.println("[ REMINDER ] New reminder saved: " + title);
+
+        reminderServer.send(200, "application/json",
+                            "{\"success\":true}");
+    });
+
+
+    // Delete reminder
+    reminderServer.on("/api/reminders", HTTP_DELETE, []() {
+
+        if (!reminderServer.hasArg("id")) {
+            reminderServer.send(400, "text/plain", "Missing ID");
+            return;
+        }
+
+        uint32_t id = (uint32_t)strtoul(
+            reminderServer.arg("id").c_str(), nullptr, 10
+        );
+
+        JsonDocument reminders;
+
+        File f = LittleFS.open(REMINDER_FILE, "r");
+
+        if (!f) {
+            reminderServer.send(404, "text/plain", "No reminders");
+            return;
+        }
+
+        DeserializationError error = deserializeJson(reminders, f);
+        f.close();
+
+        if (error) {
+            reminderServer.send(500, "text/plain", "Storage error");
+            return;
+        }
+
+        JsonArray arr = reminders.as<JsonArray>();
+
+        for (size_t i = 0; i < arr.size(); i++) {
+
+            if ((uint32_t)(arr[i]["id"] | 0) == id) {
+                arr.remove(i);
+                break;
+            }
+        }
+
+        saveReminderDocument(reminders);
+
+        reminderServer.send(200, "text/plain", "Deleted");
+    });
+
+
+    reminderServer.onNotFound([]() {
+        reminderServer.send(404, "text/plain", "Not found");
+    });
+
+
+    reminderServer.begin();
+
+    Serial.println("[ REMINDER ] Web server started on port 80");
+}
+
+
+// ==================================================
+// REMINDER SCHEDULER
+// ==================================================
+
+bool checkDueReminder() {
+
+    if (!reminderClockReady) return false;
+
+    time_t now = time(nullptr);
+
+    if (now < 1700000000) return false;
+
+    if (!LittleFS.exists(REMINDER_FILE)) return false;
+
+    File f = LittleFS.open(REMINDER_FILE, "r");
+
+    if (!f) return false;
+
+    JsonDocument reminders;
+
+    DeserializationError error = deserializeJson(reminders, f);
+    f.close();
+
+    if (error) return false;
+
+    JsonArray arr = reminders.as<JsonArray>();
+
+    if (arr.isNull()) return false;
+
+    for (JsonObject item : arr) {
+
+        uint64_t eventTime = item["epoch"] | (uint64_t)0;
+        bool done = item["done"] | false;
+
+        if (!done && eventTime <= (uint64_t)now) {
+
+            String title = item["title"] | "Scheduled event";
+
+            Serial.println();
+            Serial.println("[ REMINDER ] EVENT DUE!");
+            Serial.println(title);
+
+            // Mark it before speaking to prevent duplicate announcements.
+            item["done"] = true;
+            saveReminderDocument(reminders);
+
+            String message = "Reminder! " + title;
+
+            showResponse(message);
+
+            speak(message);
+
+            return true;
+        }
+    }
+
+    return false;
+}
+
+
 // ==================================================
 // SETUP
 // ==================================================
@@ -1496,7 +2054,7 @@ bool recorded = recordAudio();
 void setup() {
 
     Serial.begin(115200);
-    delay(1200);
+    delay(1000);
     pinMode(BUTTON_PIN, INPUT_PULLUP);
 
     Serial.println();
@@ -1504,13 +2062,33 @@ void setup() {
     Serial.printf("Reset reason: %d\n", (int)esp_reset_reason());
     Serial.printf("Free heap at boot: %u bytes\n", (unsigned)ESP.getFreeHeap());
 
-    Serial.println("[ FS ] Mounting LittleFS...");
-    if (!LittleFS.begin(false)) {
-    Serial.println("LittleFS initialization FAILED!");
-    return;
+   // ==================================================
+// LITTLEFS INITIALIZATION
+// ==================================================
+
+Serial.println("[ FS ] Mounting LittleFS...");
+
+if (!LittleFS.begin(true)) {
+
+    Serial.println("[ FS ] LittleFS initialization FAILED!");
+
+    // Stop execution instead of entering loop()
+    while (true) {
+        delay(1000);
+    }
 }
 
-Serial.println("LittleFS initialized!");
+Serial.println("[ FS ] LittleFS initialized!");
+
+Serial.printf(
+    "[ FS ] Total space: %u bytes\n",
+    (unsigned)LittleFS.totalBytes()
+);
+
+Serial.printf(
+    "[ FS ] Used space: %u bytes\n",
+    (unsigned)LittleFS.usedBytes()
+);
 
 
     // =================================================
@@ -1588,8 +2166,6 @@ Serial.println("LittleFS initialized!");
 
 
     int attempts = 0;
-
-
     while (
         WiFi.status() != WL_CONNECTED &&
         attempts < 40
@@ -1602,10 +2178,7 @@ Serial.println("LittleFS initialized!");
         attempts++;
     }
 
-
     Serial.println();
-
-
     if (
         WiFi.status() != WL_CONNECTED
     ) {
@@ -1616,56 +2189,48 @@ Serial.println("LittleFS initialized!");
 
         return;
     }
-
-
     Serial.println(
         "WiFi connected!"
     );
 
-
     Serial.print(
         "ESP32 IP: "
     );
-
     Serial.println(
         WiFi.localIP()
     );
-
-
+// ==================================================
+// START REMINDER WEBSITE
+// ==================================================
+randomSeed(esp_random());
+startReminderServer();
+Serial.print("[ REMINDER ] Open website: http://");
+Serial.println(WiFi.localIP());
     Serial.print(
         "Gateway: "
     );
-
     Serial.println(
         WiFi.gatewayIP()
     );
-
 // ==================================================
 // AKIO BUTTON CONTROL
 // ==================================================
-
 Serial.println("\n[ AKIO ] Button-controlled voice assistant");
-
 Serial.println("[ AKIO ] Microphone will initialize when requested.");
-
 Serial.println("[ AKIO ] READY!");
 Serial.println("[ BUTTON ] Press to start recording.");
-
 showNormalFace();
-   
-   
 
 }
-
-
 // ==================================================
 // MAIN LOOP
 // ==================================================
-
-
 void loop() {
 
-    // PLAY AI RESPONSE
+    // Handle website requests
+    reminderServer.handleClient();
+
+    // PLAY AI RESPONSE OR REMINDER
     if (mp3 && mp3->isRunning()) {
 
         updateSpeakingAnimation();
@@ -1684,6 +2249,12 @@ void loop() {
 
         return;
     }
+
+    // CHECK SCHEDULED REMINDERS
+    if (checkDueReminder()) {
+        return;
+    }
+
     // WAIT FOR BUTTON PRESS
     if (waitForButtonPress()) {
 
