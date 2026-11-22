@@ -1,29 +1,43 @@
+
 import io
 import json
 import wave
 import urllib.request
 from urllib.parse import urlparse, parse_qs
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import lameenc
 
 
+# ==================================================
+# CONFIGURATION
+# ==================================================
+
 PIPER_URL = "http://127.0.0.1:5000/synthesize"
 
+HOST = "0.0.0.0"
+PORT = 5001
+
+
+# ==================================================
+# GENERATE MP3
+# ==================================================
 
 def generate_mp3(text):
 
     print()
-    print("TTS text:")
+    print("================================")
+    print("TTS TEXT:")
     print(text)
+    print("================================")
 
-    # -----------------------------
-    # Ask Piper
-    # --------------------
+    # ----------------------------------------------
+    # Request WAV from Piper
+    # ----------------------------------------------
 
     data = json.dumps({
         "text": text
-    }).encode()
+    }).encode("utf-8")
 
     request = urllib.request.Request(
         PIPER_URL,
@@ -34,76 +48,103 @@ def generate_mp3(text):
         method="POST"
     )
 
-    with urllib.request.urlopen(request) as response:
+    with urllib.request.urlopen(request, timeout=120) as response:
         wav_bytes = response.read()
 
-    print("Piper WAV received:", len(wav_bytes), "bytes")
+    print("[ PIPER ] WAV received:", len(wav_bytes), "bytes")
 
-    # -----------------------------
+    # ----------------------------------------------
     # Read WAV
-    # -----------------------------
+    # ----------------------------------------------
 
-    wav = wave.open(io.BytesIO(wav_bytes), "rb")
+    with wave.open(io.BytesIO(wav_bytes), "rb") as wav:
 
-    channels = wav.getnchannels()
-    sample_rate = wav.getframerate()
-    sample_width = wav.getsampwidth()
+        channels = wav.getnchannels()
+        sample_rate = wav.getframerate()
+        sample_width = wav.getsampwidth()
+        frame_count = wav.getnframes()
 
-    print("Channels:", channels)
-    print("Sample rate:", sample_rate)
-    print("Sample width:", sample_width)
+        print("[ WAV ] Channels:", channels)
+        print("[ WAV ] Sample rate:", sample_rate)
+        print("[ WAV ] Sample width:", sample_width)
+        print("[ WAV ] Frames:", frame_count)
 
-    if sample_width != 2:
-        raise RuntimeError("Expected 16-bit PCM WAV")
+        if sample_width != 2:
+            raise RuntimeError("Expected 16-bit PCM WAV")
 
-    # -----------------------------
-    # WAV -> MP3
-    # -----------------------------
+        if channels not in (1, 2):
+            raise RuntimeError("Only mono and stereo WAV are supported")
 
-    encoder = lameenc.Encoder()
+        if frame_count == 0:
+            raise RuntimeError("Piper returned empty WAV audio")
 
-    encoder.set_bit_rate(64)
-    encoder.set_in_sample_rate(sample_rate)
-    encoder.set_channels(channels)
-    encoder.set_quality(5)
+        # ------------------------------------------
+        # Initialize MP3 encoder
+        # ------------------------------------------
 
-    mp3_data = bytearray()
+        encoder = lameenc.Encoder()
 
-    while True:
+        encoder.set_bit_rate(64)
+        encoder.set_in_sample_rate(sample_rate)
+        encoder.set_channels(channels)
+        encoder.set_quality(5)
 
-        pcm = wav.readframes(8192)
+        mp3_data = bytearray()
 
-        if not pcm:
-            break
+        # ------------------------------------------
+        # Encode PCM data
+        # ------------------------------------------
 
-        encoded = encoder.encode(pcm)
+        while True:
 
-        if encoded:
-            mp3_data.extend(encoded)
+            pcm = wav.readframes(8192)
 
-    wav.close()
+            if not pcm:
+                break
 
-    print("MP3 generated:", len(mp3_data), "bytes")
+            encoded = encoder.encode(pcm)
+
+            if encoded:
+                mp3_data.extend(encoded)
+
+        # ------------------------------------------
+        # FLUSH ONCE AFTER THE LOOP
+        # ------------------------------------------
+
+        final_data = encoder.flush()
+
+        if final_data:
+            mp3_data.extend(final_data)
+
+    print("[ MP3 ] Generated:", len(mp3_data), "bytes")
+
+    if len(mp3_data) == 0:
+        raise RuntimeError("MP3 encoding produced empty output")
 
     return bytes(mp3_data)
 
 
+# ==================================================
+# HTTP SERVER
+# ==================================================
 
 class AKIOHandler(BaseHTTPRequestHandler):
+
+    protocol_version = "HTTP/1.1"
 
     def do_GET(self):
 
         parsed = urlparse(self.path)
 
         if parsed.path != "/stream":
-            self.send_error(404)
+            self.send_error(404, "Not found")
             return
 
-        # Get text from URL
         params = parse_qs(parsed.query)
+
         text_list = params.get("text")
 
-        if not text_list:
+        if not text_list or not text_list[0].strip():
             self.send_error(400, "Missing text parameter")
             return
 
@@ -111,9 +152,13 @@ class AKIOHandler(BaseHTTPRequestHandler):
 
         try:
 
+            # Generate complete MP3 before sending headers
             mp3_data = generate_mp3(text)
 
-            # Send MP3 headers
+            # ------------------------------------------
+            # Send response
+            # ------------------------------------------
+
             self.send_response(200)
 
             self.send_header(
@@ -137,37 +182,48 @@ class AKIOHandler(BaseHTTPRequestHandler):
             self.wfile.write(mp3_data)
             self.wfile.flush()
 
-            print(
-                "MP3 sent successfully:",
-                len(mp3_data),
-                "bytes"
-            )
+            print("[ HTTP ] MP3 sent successfully")
+            print("[ HTTP ] Bytes:", len(mp3_data))
 
         except Exception as e:
 
-            print("ERROR:", repr(e))
+            print("[ ERROR ]", repr(e))
 
-            # Only send an HTTP error if headers haven't been sent
-            if not self.wfile.closed:
-                try:
-                    self.send_error(500, str(e))
-                except Exception:
-                    pass
+            try:
+                self.send_error(500, "MP3 generation failed")
+            except Exception:
+                pass
+
+        finally:
+            self.close_connection = True
 
     def log_message(self, format, *args):
         return
 
 
-server = HTTPServer(
-    ("0.0.0.0", 5001),
+# ==================================================
+# START SERVER
+# ==================================================
+
+server = ThreadingHTTPServer(
+    (HOST, PORT),
     AKIOHandler
 )
 
+server.daemon_threads = True
+
 print("================================")
-print(" AKIO MP3 SERVER")
+print("       AKIO MP3 SERVER")
 print("================================")
-print("Listening on port 5001")
+print("Listening on port", PORT)
 print("Waiting for ESP32...")
 print()
 
-server.serve_forever()
+try:
+    server.serve_forever()
+
+except KeyboardInterrupt:
+    print("\n[ SERVER ] Shutting down...")
+
+finally:
+    server.server_close()

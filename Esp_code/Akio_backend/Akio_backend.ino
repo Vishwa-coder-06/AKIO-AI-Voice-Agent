@@ -51,8 +51,9 @@ Adafruit_SSD1306 display(
 #define MIC_I2S_PORT I2S_NUM_1  // Keep I2S0 available for internal DAC speaker
 
 #define SAMPLE_RATE 16000
-#define RECORD_SECONDS 5
 #define BUFFER_SIZE 512
+#define BUTTON_PIN 32
+#define MAX_RECORD_SECONDS 30
 
 
 // ==================================================
@@ -168,6 +169,34 @@ void writeWavHeader(File &f, uint32_t dataSize) {
   writeLE32(f, dataSize);
 }
 
+// ==================================================
+// BUTTON CONTROL
+// ==================================================
+
+void waitForButtonRelease() {
+    while (digitalRead(BUTTON_PIN) == LOW) {
+        delay(10);
+    }
+
+    delay(50);
+}
+
+bool waitForButtonPress() {
+
+    if (digitalRead(BUTTON_PIN) == LOW) {
+
+        delay(40); // Debounce
+
+        if (digitalRead(BUTTON_PIN) == LOW) {
+
+            waitForButtonRelease();
+
+            return true;
+        }
+    }
+
+    return false;
+}
 // ---------------- I2S INITIALIZATION ----------------
 
 bool initializeMic() {
@@ -400,6 +429,421 @@ void showSpeakingFace() {
 
 
 // ==================================================
+// AKIO OLED ANIMATION SYSTEM
+// ==================================================
+
+enum IdleExpression {
+    IDLE_SMILE,
+    IDLE_THINK,
+    IDLE_FUNNY,
+    IDLE_SURPRISED
+};
+
+// Draw common eyes
+void drawAnimatedEyes(bool leftBlink, bool rightBlink,
+                      int leftPupilX = 39,
+                      int leftPupilY = 27,
+                      int rightPupilX = 89,
+                      int rightPupilY = 27) {
+
+    // Left eye
+    display.fillRoundRect(25, 15, 28, 24, 8, SSD1306_WHITE);
+
+    // Right eye
+    display.fillRoundRect(75, 15, 28, 24, 8, SSD1306_WHITE);
+
+    // Left pupil or blink
+    if (leftBlink) {
+        display.fillRect(25, 25, 28, 5, SSD1306_BLACK);
+    } else {
+        display.fillCircle(leftPupilX, leftPupilY, 5, SSD1306_BLACK);
+    }
+
+    // Right pupil or blink
+    if (rightBlink) {
+        display.fillRect(75, 25, 28, 5, SSD1306_BLACK);
+    } else {
+        display.fillCircle(rightPupilX, rightPupilY, 5, SSD1306_BLACK);
+    }
+}
+
+
+// Common AKIO label
+void drawAKIOLabel() {
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(48, 55);
+    display.print("AKIO");
+}
+
+
+// ==================================================
+// AKIO POWER-ON STARTUP ANIMATION
+// ==================================================
+
+void showStartupAnimation() {
+
+    Serial.println("[ AKIO ] Startup animation...");
+
+    unsigned long startTime = millis();
+
+    while (millis() - startTime < 3500) {
+
+        unsigned long now = millis();
+
+        display.clearDisplay();
+
+        // Moving background particles
+        for (int i = 0; i < 12; i++) {
+
+            int x = (i * 19 + now / 35) % 128;
+            int y = (i * 13 + now / 55) % 64;
+
+            display.drawPixel(x, y, SSD1306_WHITE);
+        }
+
+        // Animated orbit rings
+        display.drawCircle(64, 32, 27, SSD1306_WHITE);
+        display.drawCircle(64, 32, 31, SSD1306_WHITE);
+
+        // Rotating orbit particle
+        float angle = now / 180.0;
+
+        int orbitX = 64 + cos(angle) * 29;
+        int orbitY = 32 + sin(angle) * 29;
+
+        display.fillCircle(
+            orbitX,
+            orbitY,
+            3,
+            SSD1306_WHITE
+        );
+
+        // Main AKIO title
+        display.setTextColor(SSD1306_WHITE);
+        display.setTextSize(3);
+
+        display.setCursor(28, 25);
+        display.print("AKIO");
+
+        display.display();
+
+        delay(35);
+    }
+
+    display.clearDisplay();
+    display.display();
+
+    Serial.println("[ AKIO ] Startup completed!");
+}
+
+
+
+// ==================================================
+// ADVANCED IDLE ANIMATION
+// ==================================================
+
+void updateIdleAnimation() {
+
+    static unsigned long lastFrame = 0;
+    static unsigned long lastExpressionChange = 0;
+
+    static IdleExpression expression = IDLE_SMILE;
+
+    unsigned long now = millis();
+
+    // Change expression every 3.5 seconds
+    if (now - lastExpressionChange >= 3500) {
+
+        lastExpressionChange = now;
+
+        expression = (IdleExpression)(
+            ((int)expression + 1) % 4
+        );
+    }
+
+    if (now - lastFrame < 100) return;
+
+    lastFrame = now;
+
+    display.clearDisplay();
+
+    // Eye movement
+    int lookX = (int)(sin(now / 700.0) * 3);
+
+    // Blinking
+    bool leftBlink = (now % 4300) < 130;
+    bool rightBlink = (now % 4300) > 180 && (now % 4300) < 290;
+
+    // Small floating particles
+    for (int i = 0; i < 5; i++) {
+
+        int x = (i * 27 + now / 45) % 128;
+        int y = 5 + (i * 11) % 45;
+
+        display.drawPixel(x, y, SSD1306_WHITE);
+    }
+
+    // ----------------------------------------------
+    // HAPPY FACE
+    // ----------------------------------------------
+
+    if (expression == IDLE_SMILE) {
+
+        drawAnimatedEyes(
+            leftBlink,
+            rightBlink,
+            39 + lookX,
+            27,
+            89 + lookX,
+            27
+        );
+
+        // Smile
+        display.drawLine(52, 44, 59, 49, SSD1306_WHITE);
+        display.drawLine(59, 49, 68, 49, SSD1306_WHITE);
+        display.drawLine(68, 49, 76, 44, SSD1306_WHITE);
+
+        // Cheeks
+        display.drawCircle(19, 40, 2, SSD1306_WHITE);
+        display.drawCircle(109, 40, 2, SSD1306_WHITE);
+    }
+
+    // ----------------------------------------------
+    // THINKING FACE
+    // ----------------------------------------------
+
+    else if (expression == IDLE_THINK) {
+
+        drawAnimatedEyes(
+            leftBlink,
+            false,
+            39,
+            20,
+            89,
+            20
+        );
+
+        // Thinking mouth
+        display.drawCircle(64, 47, 4, SSD1306_WHITE);
+
+        // Floating thought bubbles
+        int bubbleY = 10 + (int)(sin(now / 250.0) * 3);
+
+        display.drawCircle(104, bubbleY, 3, SSD1306_WHITE);
+        display.drawCircle(113, bubbleY - 7, 2, SSD1306_WHITE);
+        display.drawPixel(119, bubbleY - 12, SSD1306_WHITE);
+    }
+
+    // ----------------------------------------------
+    // FUNNY WINKING FACE
+    // ----------------------------------------------
+
+    else if (expression == IDLE_FUNNY) {
+
+        drawAnimatedEyes(
+            true,
+            false,
+            39,
+            27,
+            89 + lookX,
+            27
+        );
+
+        // Open mouth
+        display.fillRoundRect(
+            53, 40,
+            23, 14,
+            5,
+            SSD1306_WHITE
+        );
+
+        // Tongue
+        display.fillRoundRect(
+            61, 47,
+            10, 8,
+            3,
+            SSD1306_BLACK
+        );
+
+        // Funny eyebrow
+        display.drawLine(77, 10, 99, 14, SSD1306_WHITE);
+    }
+
+    // ----------------------------------------------
+    // SURPRISED FACE
+    // ----------------------------------------------
+
+    else if (expression == IDLE_SURPRISED) {
+
+        // Big surprised eyes
+        display.fillCircle(39, 27, 13, SSD1306_WHITE);
+        display.fillCircle(89, 27, 13, SSD1306_WHITE);
+
+        display.fillCircle(39, 27, 5, SSD1306_BLACK);
+        display.fillCircle(89, 27, 5, SSD1306_BLACK);
+
+        // Surprised mouth
+        display.drawCircle(64, 47, 6, SSD1306_WHITE);
+
+        // Small surprise marks
+        display.drawLine(15, 12, 19, 17, SSD1306_WHITE);
+        display.drawLine(112, 12, 108, 17, SSD1306_WHITE);
+    }
+
+    drawAKIOLabel();
+
+    display.display();
+}
+
+
+// --------------------------------------------------
+// LISTENING ANIMATION
+// Animated sound wave bars
+// --------------------------------------------------
+
+void updateListeningAnimation() {
+
+    static unsigned long lastFrame = 0;
+
+    unsigned long now = millis();
+
+    if (now - lastFrame < 100) return;
+
+    lastFrame = now;
+
+    display.clearDisplay();
+
+    // Alert eyes
+    drawAnimatedEyes(false, false);
+
+    // Sound wave bars
+    for (int i = 0; i < 9; i++) {
+
+        int x = 30 + (i * 9);
+
+        int height = 4 + abs(
+            (int)(sin((now / 180.0) + i * 0.7) * 12)
+        );
+
+        display.fillRoundRect(
+            x,
+            49 - height / 2,
+            4,
+            height,
+            2,
+            SSD1306_WHITE
+        );
+    }
+
+    display.display();
+}
+
+
+
+// ==================================================
+// ADVANCED SPEAKING ANIMATION
+// ==================================================
+
+void updateSpeakingAnimation() {
+
+    static unsigned long lastFrame = 0;
+
+    unsigned long now = millis();
+
+    // Refresh every 120 ms
+    if (now - lastFrame < 120) return;
+
+    lastFrame = now;
+
+    display.clearDisplay();
+
+    // Eyes look around slightly while speaking
+    int lookX = (int)(sin(now / 500.0) * 3);
+
+    // Occasional blink
+    bool blink = (now % 3700) < 140;
+
+    drawAnimatedEyes(
+        blink,
+        false,
+        39 + lookX,
+        27,
+        89 + lookX,
+        27
+    );
+
+    // Three mouth animation frames
+    int mouthFrame = (now / 180) % 3;
+
+    if (mouthFrame == 0) {
+
+        // Small closed mouth
+        display.fillRoundRect(
+            55, 44,
+            19, 4,
+            2,
+            SSD1306_WHITE
+        );
+    }
+
+    else if (mouthFrame == 1) {
+
+        // Medium open mouth
+        display.fillRoundRect(
+            53, 42,
+            23, 10,
+            5,
+            SSD1306_WHITE
+        );
+
+        display.fillCircle(
+            64, 47,
+            3,
+            SSD1306_BLACK
+        );
+    }
+
+    else {
+
+        // Big open mouth
+        display.fillRoundRect(
+            51, 39,
+            27, 17,
+            7,
+            SSD1306_WHITE
+        );
+
+        // Inner mouth
+        display.fillRoundRect(
+            57, 44,
+            15, 10,
+            4,
+            SSD1306_BLACK
+        );
+
+        // Tongue
+        display.fillRoundRect(
+            61, 49,
+            7, 5,
+            2,
+            SSD1306_WHITE
+        );
+    }
+
+    // Small sound particles
+    int wave = (now / 150) % 3;
+
+    display.drawPixel(34, 46 + wave * 2, SSD1306_WHITE);
+    display.drawPixel(94, 46 - wave * 2, SSD1306_WHITE);
+
+    drawAKIOLabel();
+
+    display.display();
+}
+
+
+// ==================================================
 // SHOW QUESTION
 // ==================================================
 
@@ -624,99 +1068,135 @@ String askAKIO(String message) {
 
 bool recordAudio() {
 
-  if (micRxHandle == nullptr) {
-    Serial.println("[ MIC ] Cannot record: RX channel is not initialized");
-    return false;
-  }
-
-  Serial.println("\n[ MIC ] Get ready...");
-  delay(1000);
-
-  File audioFile = LittleFS.open("/recording.wav", "w");
-  if (!audioFile) {
-    Serial.println("[ MIC ] Could not create /recording.wav");
-    return false;
-  }
-
-  uint8_t emptyHeader[44] = {0};
-  if (audioFile.write(emptyHeader, sizeof(emptyHeader)) != sizeof(emptyHeader)) {
-    Serial.println("[ MIC ] Failed to reserve WAV header");
-    audioFile.close();
-    return false;
-  }
-
-  const uint32_t targetSamples = SAMPLE_RATE * RECORD_SECONDS;
-  uint32_t recordedSamples = 0;
-  uint32_t lastProgressMs = millis();
-  const uint32_t MAX_NO_DATA_MS = 15000;
-
-  Serial.println("[ MIC ] RECORDING STARTED - speak now");
-
-  while (recordedSamples < targetSamples) {
-    size_t bytesRead = 0;
-
-    esp_err_t result = i2s_channel_read(
-      micRxHandle,
-      rawSamples,
-      sizeof(rawSamples),
-      &bytesRead,
-      1000
-    );
-
-    if (result != ESP_OK || bytesRead == 0) {
-      if (millis() - lastProgressMs > MAX_NO_DATA_MS) {
-        Serial.printf("[ MIC ] I2S read timeout/error: %s (%d)\n",
-                      esp_err_to_name(result), (int)result);
-        audioFile.close();
-        LittleFS.remove("/recording.wav");
+    if (micRxHandle == nullptr) {
+        Serial.println("[ MIC ] Microphone not initialized!");
         return false;
-      }
-      continue;
     }
 
-    lastProgressMs = millis();
+    Serial.println("\n[ MIC ] Recording started!");
+    Serial.println("[ BUTTON ] Press again to stop recording.");
 
-    int count = bytesRead / sizeof(int32_t);
-    if (recordedSamples + count > targetSamples) {
-      count = targetSamples - recordedSamples;
+    File audioFile = LittleFS.open("/recording.wav", "w");
+
+    if (!audioFile) {
+        Serial.println("[ MIC ] Could not create recording file!");
+        return false;
     }
 
-    for (int i = 0; i < count; i++) {
-      // INMP441 24-bit sample is left-aligned in the 32-bit I2S slot.
-      int32_t sample = rawSamples[i] >> 16;
-      sample *= 3;  // Current tested software gain.
+    // Reserve WAV header
+    uint8_t emptyHeader[44] = {0};
 
-      if (sample > 32767) sample = 32767;
-      if (sample < -32768) sample = -32768;
-
-      pcmSamples[i] = (int16_t)sample;
+    if (audioFile.write(emptyHeader, 44) != 44) {
+        audioFile.close();
+        return false;
     }
 
-    size_t bytesToWrite = count * sizeof(int16_t);
-    size_t bytesWritten = audioFile.write(
-      (const uint8_t*)pcmSamples,
-      bytesToWrite
+    uint32_t recordedSamples = 0;
+    uint32_t maxSamples = SAMPLE_RATE * MAX_RECORD_SECONDS;
+
+    uint32_t lastProgressMs = millis();
+
+    bool stoppedByButton = false;
+
+    while (recordedSamples < maxSamples) {
+        updateListeningAnimation();
+
+        // Check whether the user pressed the button again.
+        if (waitForButtonPress()) {
+
+            if (recordedSamples >= SAMPLE_RATE / 2) {
+                stoppedByButton = true;
+                Serial.println("[ MIC ] Stop button pressed.");
+                break;
+            }
+
+            Serial.println("[ MIC ] Speak a little longer...");
+        }
+
+        size_t bytesRead = 0;
+
+        esp_err_t result = i2s_channel_read(
+            micRxHandle,
+            rawSamples,
+            sizeof(rawSamples),
+            &bytesRead,
+            100
+        );
+
+        if (result != ESP_OK || bytesRead == 0) {
+
+            if (millis() - lastProgressMs > 15000) {
+
+                Serial.println("[ MIC ] Microphone timeout!");
+
+                audioFile.close();
+                LittleFS.remove("/recording.wav");
+
+                return false;
+            }
+
+            continue;
+        }
+
+        lastProgressMs = millis();
+
+        int count = bytesRead / sizeof(int32_t);
+
+        if (recordedSamples + count > maxSamples) {
+            count = maxSamples - recordedSamples;
+        }
+
+        for (int i = 0; i < count; i++) {
+
+            int32_t sample = rawSamples[i] >> 16;
+
+            sample *= 3;
+
+            if (sample > 32767) sample = 32767;
+            if (sample < -32768) sample = -32768;
+
+            pcmSamples[i] = (int16_t)sample;
+        }
+
+        size_t bytesToWrite = count * sizeof(int16_t);
+
+        size_t bytesWritten = audioFile.write(
+            (const uint8_t*)pcmSamples,
+            bytesToWrite
+        );
+
+        if (bytesWritten != bytesToWrite) {
+
+            Serial.println("[ MIC ] File write failed!");
+
+            audioFile.close();
+            LittleFS.remove("/recording.wav");
+
+            return false;
+        }
+
+        recordedSamples += count;
+    }
+
+    uint32_t dataSize = recordedSamples * sizeof(int16_t);
+
+    writeWavHeader(audioFile, dataSize);
+
+    audioFile.flush();
+    audioFile.close();
+
+    Serial.println("[ MIC ] Recording finished.");
+
+    Serial.printf(
+        "[ MIC ] Duration: %.2f seconds\n",
+        (float)recordedSamples / SAMPLE_RATE
     );
 
-    if (bytesWritten != bytesToWrite) {
-      Serial.println("[ MIC ] LittleFS write failed");
-      audioFile.close();
-      LittleFS.remove("/recording.wav");
-      return false;
+    if (!stoppedByButton) {
+        Serial.println("[ MIC ] Maximum recording time reached.");
     }
 
-    recordedSamples += count;
-  }
-
-  uint32_t dataSize = recordedSamples * sizeof(int16_t);
-  writeWavHeader(audioFile, dataSize);
-  audioFile.flush();
-  audioFile.close();
-
-  Serial.println("[ MIC ] RECORDING FINISHED");
-  Serial.printf("[ MIC ] Samples: %lu\n", (unsigned long)recordedSamples);
-  Serial.printf("[ MIC ] WAV data: %lu bytes\n", (unsigned long)dataSize);
-  return true;
+    return recordedSamples > 0;
 }
 
 
@@ -848,17 +1328,24 @@ void speak(String text) {
         return;
     }
 
-    file->SetReconnect(5, 1000);
+    //file->SetReconnect(5, 1000);
 
     Serial.println("[ TTS ] Opening MP3 stream...");
 
-    if (!file->open(audioURL.c_str())) {
+    unsigned long openStart = millis();
 
-        Serial.println("[ TTS ] HTTP stream OPEN FAILED!");
+bool opened = file->open(audioURL.c_str());
 
-        cleanupAudio();
-        return;
-    }
+Serial.printf(
+    "[ TTS ] HTTP open took %lu ms\n",
+    millis() - openStart
+);
+
+if (!opened) {
+    Serial.println("[ TTS ] HTTP stream OPEN FAILED!");
+    cleanupAudio();
+    return;
+}
 
     Serial.println("[ TTS ] HTTP stream opened!");
 
@@ -913,7 +1400,93 @@ Serial.printf(
 
     Serial.println("[ TTS ] AKIO SPEAKING...");
 
-    showSpeakingFace();
+updateSpeakingAnimation();
+}
+
+// ==================================================
+// PROCESS USER VOICE
+// ==================================================
+
+void processVoiceRequest() {
+
+    Serial.println("\n========== NEW REQUEST ==========");
+
+    showNormalFace();
+
+    // 1. Initialize microphone
+    Serial.println("[ MIC ] Initializing...");
+
+    if (!initializeMic()) {
+
+        Serial.println("[ MIC ] Initialization failed!");
+
+        showNormalFace();
+        return;
+    }
+
+    // 2. Record until second button press
+updateListeningAnimation();
+
+bool recorded = recordAudio();
+
+    // Release microphone before network and speaker operations
+    deinitializeMic();
+
+    if (!recorded) {
+
+        Serial.println("[ MIC ] Recording failed!");
+
+        showNormalFace();
+        return;
+    }
+
+    // 3. Upload recording to Faster-Whisper
+    showThinking();
+
+    String question = uploadRecording();
+
+    LittleFS.remove("/recording.wav");
+
+    if (question.length() == 0) {
+
+        Serial.println("[ STT ] No speech recognized!");
+
+        showNormalFace();
+        return;
+    }
+
+    // 4. Display recognized question
+    showQuestion(question);
+
+    // 5. Ask Gemini through Spring Boot
+    showThinking();
+
+    String answer = askAKIO(question);
+
+    if (answer.length() == 0) {
+
+        Serial.println("[ AI ] No response received!");
+
+        showNormalFace();
+        return;
+    }
+
+    // 6. Display answer
+    showResponse(answer);
+
+    delay(500);
+
+    // 7. Speak answer
+    speak(answer);
+
+    // If playback could not start, return to idle.
+    if (mp3 == nullptr || !mp3->isRunning()) {
+
+        cleanupAudio();
+        showNormalFace();
+    }
+
+    Serial.println("========== REQUEST PROCESSED ==========");
 }
 
 // ==================================================
@@ -924,6 +1497,7 @@ void setup() {
 
     Serial.begin(115200);
     delay(1200);
+    pinMode(BUTTON_PIN, INPUT_PULLUP);
 
     Serial.println();
     Serial.println("========== AKIO BOOT ==========");
@@ -962,12 +1536,14 @@ Serial.println("LittleFS initialized!");
 
     } else {
 
-        Serial.println(
-            "OLED initialized!"
-        );
+    Serial.println("OLED initialized!");
 
-        showNormalFace();
-    }
+    // Play startup animation for 3.5 seconds
+    showStartupAnimation();
+
+    // Enter normal mode
+    showNormalFace();
+}
 
 
     // =================================================
@@ -1064,114 +1640,60 @@ Serial.println("LittleFS initialized!");
         WiFi.gatewayIP()
     );
 
+// ==================================================
+// AKIO BUTTON CONTROL
+// ==================================================
 
+Serial.println("\n[ AKIO ] Button-controlled voice assistant");
+
+Serial.println("[ AKIO ] Microphone will initialize when requested.");
+
+Serial.println("[ AKIO ] READY!");
+Serial.println("[ BUTTON ] Press to start recording.");
+
+showNormalFace();
    
-    // =================================================
-    // AKIO VOICE ASSISTANT
-    // =================================================
-
-    // Microphone uses I2S1. Internal DAC playback remains on I2S0.
-    Serial.println("\n[ MIC ] Initializing INMP441...");
-    Serial.printf("[ SYS ] Free heap before mic: %u bytes\n", (unsigned)ESP.getFreeHeap());
-
-    if (!initializeMic()) {
-        Serial.println("Microphone initialization FAILED!");
-        showNormalFace();
-        return;
-    }
-
-    Serial.println("[ MIC ] Microphone initialized");
-    Serial.printf("[ SYS ] Free heap after mic init: %u bytes\n", (unsigned)ESP.getFreeHeap());
-
-    // Record voice
-    Serial.println("\nRecording your voice...");
-    showNormalFace();
-
-    if (!recordAudio()) {
-        Serial.println("Recording failed!");
-        deinitializeMic();
-        showNormalFace();
-        return;
-    }
-
-    // Release microphone I2S before network requests and TTS playback.
-    deinitializeMic();
-    Serial.println("Recording completed; microphone driver released.");
-
-    Serial.printf("[ SYS ] Free heap after recording: %u bytes\n", (unsigned)ESP.getFreeHeap());
-
-    // Upload WAV and convert speech to text.
-    String question = uploadRecording();
-
-    if (question.length() == 0) {
-
-        Serial.println("No speech recognized!");
-
-        showNormalFace();
-
-        return;
-    }
-
-    // 3. Show recognized question
-    showQuestion(question);
-
-    // 4. Show thinking animation
-    showThinking();
-
-    // 5. Send recognized text to Gemini
-    String answer = askAKIO(question);
-
-    if (answer.length() == 0) {
-
-        Serial.println("No AI response received!");
-
-        showNormalFace();
-
-        return;
-    }
-
-    // 6. Display AI response
-    showResponse(answer);
-
-    delay(1000);
-
-    // 7. Speak AI response
-    speak(answer);
+   
 
 }
 
 
 // ==================================================
-// LOOP
+// MAIN LOOP
 // ==================================================
+
 
 void loop() {
 
-    if (
-        mp3 &&
-        mp3->isRunning()
-    ) {
+    // PLAY AI RESPONSE
+    if (mp3 && mp3->isRunning()) {
 
-        if (
-            !mp3->loop()
-        ) {
+        updateSpeakingAnimation();
 
-            mp3->stop();
+        if (!mp3->loop()) {
 
+            Serial.println("\n[ TTS ] Playback completed.");
 
-            Serial.println();
+            cleanupAudio();
 
-            Serial.println(
-                "🔊 AKIO finished speaking."
-            );
-
-
-            // Return to normal face
             showNormalFace();
+
+            Serial.println("[ AKIO ] READY FOR NEXT QUESTION.");
+            Serial.println("[ BUTTON ] Press to start recording.");
         }
 
-    } else {
-
-        delay(20);
+        return;
     }
+    // WAIT FOR BUTTON PRESS
+    if (waitForButtonPress()) {
+
+        Serial.println("\n[ BUTTON ] Recording requested.");
+
+        processVoiceRequest();
+    }
+
+    // IDLE ANIMATION
+    updateIdleAnimation();
+
+    delay(20);
 }
